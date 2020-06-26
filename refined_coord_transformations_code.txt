@@ -1,0 +1,96 @@
+import math
+import csv
+
+#WGS84 
+##Equatorial Radius = 6378137
+#Inverse Flattening = 298.257223563
+
+a = 6378137
+inv_f = 298.257224
+f = 1/inv_f
+g = (1 - f) * (1 - f)
+
+input_path = 'fuse_to_obj.csv'
+output_path = 'testproj.txt'
+wgs84_data = []
+local_coords_data = []
+
+lat_ref = 45.90360309
+long_ref = 11.02804799
+alt_ref = 227.5475
+
+def wgs84_to_ecef(lat, long, alt):
+    lat_cos = math.cos(lat * math.pi / 180)
+    lat_sin = math.sin(lat * math.pi / 180)
+
+    long_cos = math.cos(long * math.pi / 180)
+    long_sin = math.sin(long * math.pi / 180)
+
+    d = 1 / math.sqrt(math.pow(lat_cos, 2) + g * math.pow(lat_sin, 2))
+
+    x = (a * d + alt) * lat_cos * long_cos
+    y = (a * d + alt) * lat_cos * long_sin
+    z = (a * d * g + alt) * lat_sin
+
+    return x, y, z
+
+def ecef_to_enu(x, y, z, lat_ref, long_ref, alt_ref):
+    lat_cos_ref = math.cos(lat_ref * math.pi / 180)
+    lat_sin_ref = math.sin(lat_ref * math.pi / 180)
+
+    long_cos_ref = math.cos(long_ref * math.pi / 180)
+    long_sin_ref = math.sin(long_ref * math.pi / 180)
+
+    d_ref = 1 / math.sqrt(math.pow(lat_cos_ref, 2) + g * math.pow(lat_sin_ref, 2))
+
+    x_ref = (a * d_ref + alt_ref) * lat_cos_ref * long_cos_ref
+    y_ref = (a * d_ref + alt_ref) * lat_cos_ref * long_sin_ref
+    z_ref = (a * d_ref * g + alt_ref) * lat_sin_ref
+
+    east = (-(x - x_ref) * long_sin_ref) + ((y - y_ref) * long_cos_ref)
+    north = (-long_cos_ref * lat_sin_ref * (x - x_ref)) - (lat_sin_ref * long_sin_ref * (y - y_ref)) + (lat_cos_ref * (z - z_ref))
+    up = (lat_cos_ref * long_cos_ref * (x - x_ref)) + (lat_cos_ref * long_sin_ref * (y - y_ref)) + (lat_sin_ref * (z - z_ref))
+
+    return east, north, up
+
+def wgs84_to_enu(lat, long, alt, lat_ref, long_ref, alt_ref):
+    x, y, z = wgs84_to_ecef(lat, long, alt)
+
+    return ecef_to_enu(x, y, z, lat_ref, long_ref, alt_ref)
+
+def read_file(input_path):
+    file = open(input_path, newline = '')
+    reader = csv.reader(file)
+
+    header = next(reader)
+    data = []
+
+    for row in reader:
+        lat = float(row[0])
+        long = float(row[1])
+        alt = float(row[2])
+        inten = float(row[3])
+
+        data.append([lat, long, alt, inten])
+    file.close()
+
+    return data
+
+def write_file(output_path):
+    f = open(output_path, 'w')
+
+    for t in local_coords_data:
+        line = ' '.join(str(x) for x in t)
+        f.write(line + '\n')
+    f.close()
+
+def coordTransformation():
+    for pt in wgs84_data:
+        e, n, u = wgs84_to_enu(pt[0], pt[1], pt[2], lat_ref, long_ref, alt_ref)
+        local_coords_data.append([e, n, u, 150])
+        
+    write_file(output_path)
+    return local_coords_data
+
+wgs84_data = read_file(input_path)
+local_coords_data = coordTransformation()
