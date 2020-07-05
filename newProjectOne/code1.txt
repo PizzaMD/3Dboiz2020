@@ -1,0 +1,272 @@
+import math
+import requests
+import shutil
+from PIL import Image
+import overpy
+import matplotlib.pyplot as plt
+import matplotlib.cbook as cbook
+import os
+api = overpy.Overpass()
+
+#David's Portion
+earthRadius = 6378137
+minLat = -85.05112878
+maxLat = 85.05112878
+minLong = -180
+maxLong = 180
+
+def Clip(n, minValue, maxValue):
+
+    return min(max(n, minValue), maxValue)
+
+def MapSize(levelOfDetail):
+
+    return 256 * pow(2, levelOfDetail)
+
+def GroundResolution(latitude, levelOfDetail):
+    latitude = Clip(latitude, minLat, maxLat)
+
+    return math.cos(latitude * math.pi / 180) * 2 * math.pi * earthRadius / MapSize(levelOfDetail)
+
+def LatLongToPixelXY(latitude, longitude, levelOfDetail):
+    latitude = Clip(latitude, minLat, maxLat)
+    longitude = Clip(longitude, minLong, maxLong)
+   
+    x = (longitude + 180) / 360
+    sinLatitude = math.sin(latitude * math.pi / 180)
+    y = 0.5 - math.log((1 + sinLatitude) / ( 1 - sinLatitude)) / (4 * math.pi)
+
+    mapSize = MapSize(levelOfDetail)
+    pixelX = (int) (Clip(x * mapSize + 0.5, 0, mapSize - 1))
+    pixelY = (int) (Clip(y * mapSize + 0.5, 0, mapSize - 1))
+
+    return pixelX, pixelY
+
+def PixelXYToLatLong(pixelX, pixelY, levelOfDetail):
+    mapSize = MapSize(levelOfDetail)
+    x = (Clip(pixelX, 0, mapSize - 1) / mapSize) - 0.5
+    y = 0.5 - (Clip(pixelY, 0, mapSize - 1) / mapSize)
+
+    latitude = 90 - 360 * math.atan(math.exp(-y * 2 * math.pi)) / math.pi
+    longitude = 360 * x
+
+    return latitude, longitude
+
+def PixelXYToTileXY(pixelX, pixelY, levelOfDetail):
+    tileX = (int) (pixelX / 256)
+    tileY = (int) (pixelY / 256)
+
+    return tileX, tileY
+
+def TileXYToPixelXY(tileX, tileY):
+    pixelX = tileX * 256
+    pixelY = tileY * 256
+
+    return pixelX, pixelY
+
+def TileXYToQuadKey(tileX, tileY, levelOfDetail):
+    quadKey = ''
+
+    for i in range(levelOfDetail, 0, -1):
+        digit = 0
+        mask = 1 << (i - 1)
+        if ((tileX & mask) != 0):
+            digit = digit + 1
+
+        if ((tileY & mask != 0)):
+            digit = digit + 1
+            digit = digit + 1
+        quadKey += str(digit)
+        
+    return 'http://ecn.t0.tiles.virtualearth.net/tiles/a' + quadKey + '.jpeg?g=471&mkt=en'
+
+def LatLongToTileXY(latitude, longitude, levelOfDetail):
+    pixelX, pixelY = LatLongToPixelXY(latitude, longitude, levelOfDetail)
+
+    return PixelXYToTileXY(pixelX, pixelY, levelOfDetail)
+
+def LatLongToNewLatLong(latitude, longitude, levelOfDetail):
+    pixelX, pixelY = LatLongToPixelXY(latitude, longitude, levelOfDetail)
+    tileX, tileY = PixelXYToTileXY(pixelX, pixelY, levelOfDetail)
+
+    newPixelX, newPixelY = TileXYToPixelXY(tileX, tileY)
+    newLatitude, newLongitude = PixelXYToLatLong(newPixelX, newPixelY, levelOfDetail)
+    return newLatitude, newLongitude
+
+def GetListOfTileURLS(northLatitude, westLongitude, southLatitude, eastLongitude, levelOfDetail):
+    x, y = LatLongToTileXY(northLatitude, westLongitude, levelOfDetail)
+    x2, y2 = LatLongToTileXY(southLatitude, eastLongitude, levelOfDetail)
+
+    width = x2 - x
+    height = y2 - y
+    size = width * height
+
+    urls = list(range(size))
+    increment = 0
+
+    for i in range(x, x2):
+        for i2 in range(y, y2):
+            urls[increment] = TileXYToQuadKey(i, i2, levelOfDetail)
+            increment = increment + 1
+
+    return urls, width, height
+
+def ConcatHorz(imageOne, imageTwo):
+    dst = Image.new('RGB', (imageOne.width + imageTwo.width, imageOne.height))
+    dst.paste(imageOne, (0, 0))
+    dst.paste(imageTwo, (imageOne.width, 0))
+    return dst
+
+def ConcatVert(imageOne, imageTwo):
+    dst = Image.new('RGB', (imageOne.width, imageOne.height + imageTwo.height))
+    dst.paste(imageOne, (0, 0))
+    dst.paste(imageTwo, (0, imageOne.height))
+    return dst
+
+def GetImageFromURL(filePath, imageURL):
+    r = requests.get(imageURL, stream = True)
+
+    if r.status_code == 200:
+        r.raw.decode_content = True
+
+        with open(filePath,'wb') as f:
+            shutil.copyfileobj(r.raw, f)
+
+        print('Image sucessfully Downloaded: ', filePath)
+
+    else:
+        print('Image couldnt be retrieved')
+
+def GetListOfImages(listOfURLS, width, height):
+    size = height * width
+    listOfImages = []
+
+    for i in range(0, size):
+        imageName = str(i) + '.png'
+        GetImageFromURL(imageName, listOfURLS[i])
+        listOfImages.append(imageName)
+    return listOfImages
+
+def GetColumns(listOfImages, width, height):
+    increment = 0
+    beginning = 0
+    listOfColumns = []
+
+    for i in range(0, width):
+        filePathToSave = str(beginning) + '.png'
+
+        for i2 in range(1, height):
+            im = Image.open(listOfImages[beginning])
+            im2 = Image.open(listOfImages[beginning + i2])
+
+            ConcatVert(im, im2).save(filePathToSave)
+            increment = increment + 1
+        beginning += height
+        listOfColumns.append(filePathToSave)
+
+    return listOfColumns
+
+def ConcatenateColumns(listOfColumns):
+    #filePath = 'C:\\Users\\David\\Anaconda3\\Lib\\site-packages\\matplotlib\\mpl-data\\sample_data\\' + listOfColumns[0]
+    #C:\Users\David\Anaconda3\Lib\site-packages\matplotlib\mpl-data\sample_data
+    #print(filePath)
+    for i in range(1, len(listOfColumns)):
+        imageOne = Image.open(listOfColumns[0])
+        imageTwo = Image.open(listOfColumns[i])
+
+        ConcatHorz(imageOne, imageTwo).save(listOfColumns[0])
+    return listOfColumns[0]
+
+def GetFullImage(boundingBox):
+    name = boundingBox[0]
+    northLatitude = boundingBox[1]
+    westLongitude = boundingBox[2]
+    southLatitude = boundingBox[3]
+    eastLongitude = boundingBox[4]
+    levelOfDetail = boundingBox[5]
+
+    print(name)
+    print('--------------------------------------------------------------------------------')
+    print('North Latitude: ' + str(northLatitude))
+    print('West Longitude: ' + str(westLongitude))
+    print('South Latitude: ' + str(southLatitude))
+    print('East Longitude: ' + str(eastLongitude))
+    print('Level Of Detail: ' + str(levelOfDetail))
+    print('Map Size: ' + str(MapSize(levelOfDetail)) + ' pixels')
+    print('Ground Resolution: ' + str(GroundResolution(northLatitude, levelOfDetail)) + ' meters/pixel\n')
+
+    listOfTileURLS, width, height = GetListOfTileURLS(northLatitude, westLongitude, southLatitude, eastLongitude, levelOfDetail)
+    print('Image Specifications: ')
+    print('--------------------------------------------------------------------------------')
+    print('Image Height: ' + str(height) + ' tiles')
+    print('Image Width: ' + str(width) + ' tiles')
+    print('Image Size: ' + str(width * height) + 'tiles\n')
+    print('List Of URLS: ')
+    print('--------------------------------------------------------------------------------')
+    for i in listOfTileURLS:
+        print(i)
+
+    print('\nImages Downloading')
+    print('--------------------------------------------------------------------------------')
+    listOfImages = GetListOfImages(listOfTileURLS, width, height)
+    listOfColumns = GetColumns(listOfImages, width, height)
+    finalImage = (ConcatenateColumns(listOfColumns))
+
+    print('\nFinal Image Created: ' + finalImage)
+
+    return finalImage
+
+#Bounding Box Parameters
+#Name, North Latitude, West Longitude, South Latitude, East Longitude, Level Of Detail
+
+#bBox = ['IIT Campus', 41.839, -87.629, 41.831, -87.623, 18]
+#bBox = ['Warsaw', 52.233792, 21.004996, 52.224540, 21.019781, 18]
+bBox = ['Cameron\'s Point',40.226226,-88.445821, 40.161832, -88.342686,18]
+finalImage = GetFullImage(bBox)
+
+newLatitude1, newLongitude1 = LatLongToNewLatLong(bBox[1], bBox[2], bBox[5])
+newLatitude2, newLongitude2 = LatLongToNewLatLong(bBox[3], bBox[4], bBox[5])
+
+newBBox = ['', newLatitude1, newLongitude1, newLatitude2, newLongitude2]
+print(newBBox)
+
+queryBBox = str(newBBox[3]) + ',' + str(newBBox[2]) + ',' + str(newBBox[1]) + ',' + str(newBBox[4])
+
+result = api.query("""
+[out:json]
+;
+(
+  way
+    ["highway"]['highway'!='path']['highway'!='steps']['highway'!='footway']['highway'!='escape']['highway'!='service']['highway'!='pedestrian']
+    (""" + queryBBox + """);
+);
+out;
+>;
+out skel qt;
+""")
+
+lats = []
+lons = []
+#print(os.getcwd())
+#41.839, -87.629, 41.831, -87.623
+imageFile = cbook.get_sample_data(finalImage)
+img = plt.imread(imageFile, 0)
+fig, ax = plt.subplots()
+#ax.set_xlim([-87.629539,-87.623453])
+#ax.set_ylim([41.831173,41.839406])
+ax.set_ylim([newBBox[3],newBBox[1]])
+ax.set_xlim([newBBox[2],newBBox[4]])
+
+#ax.imshow(img, extent= [-87.629539,-87.623453,41.831173,41.839406])
+ax.imshow(img, extent= [newBBox[2],newBBox[4],newBBox[3],newBBox[1]])
+for n in result.ways:
+    for node in n.nodes:
+        #print(str(node.lat))
+        lats.append(node.lat)
+        lons.append(node.lon)
+    plt.plot(lons, lats)
+    lats = []
+    lons = []
+#plt.xlim((-.05,1.05))
+#plt.ylim((-.05,1.05))
+plt.show()
